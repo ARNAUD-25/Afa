@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Profils utilisateurs : chacun ne peut créer/modifier que le sien
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    // Fonction utilitaire : vérifie que le compte connecté a un profil autorisé à vendre
+    function isSeller() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in
+        ['agriculteur', 'cooperative', 'pme_agricole', 'transformateur', 'fournisseur'];
+    }
+
+    // Fonctions utilitaires liées au rôle du compte connecté
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    function isAdmin() {
+      return request.auth != null && myRole() == 'admin';
+    }
+    function isFinancier() {
+      return request.auth != null && myRole() == 'financier';
+    }
+    // Seuls les profils acheteurs (restaurant, supermarché, exportateur, consommateur) font des demandes
+    function canRequest() {
+      return request.auth != null && myRole() in ['restaurant', 'supermarche', 'exportateur', 'consommateur'];
+    }
+
+    // Annonces : chaque nouvelle annonce démarre "en attente" et n'est visible du
+    // public qu'une fois validée par l'équipe AFA (modération) — sauf pour son
+    // propriétaire (qui doit voir sa propre annonce même en attente) et l'admin.
+    match /products/{productId} {
+      allow read: if resource.data.status == 'approuve'
+                  || (request.auth != null && resource.data.sellerUid == request.auth.uid)
+                  || isAdmin();
+      allow create: if request.auth != null
+                    && request.resource.data.sellerUid == request.auth.uid
+                    && isSeller()
+                    && request.resource.data.status == 'en_attente';
+      // Le vendeur peut modifier/republier sa propre annonce, mais seulement en la
+      // remettant "en attente" (jamais en se l'auto-validant) ; seul l'admin peut
+      // la faire passer à "approuve" ou "refusee".
+      allow update: if isAdmin()
+                    || (request.auth != null && resource.data.sellerUid == request.auth.uid
+                        && request.resource.data.status == 'en_attente');
+      allow delete: if request.auth != null && resource.data.sellerUid == request.auth.uid;
+    }
+
+    // Demandes d'achat : c'est le cœur du modèle "intermédiaire de confiance".
+    //  - création : uniquement par un profil autorisé à acheter, et seulement en son
+    //    propre nom (buyerUid doit correspondre au compte connecté)
+    //  - lecture : uniquement l'auteur de la demande, ou l'équipe AFA (admin) —
+    //    jamais le vendeur, jamais un autre acheteur
+    //  - mise à jour (ajout du devis, changement de statut) : réservée à l'équipe AFA
+    // Un acheteur peut confirmer ou annuler SA commande, uniquement une fois le
+    // devis reçu, et uniquement en changeant le champ "status" (rien d'autre).
+    function isBuyerConfirmingOwnQuote() {
+      return request.auth != null
+        && resource.data.buyerUid == request.auth.uid
+        && resource.data.status == 'devis_envoye'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status in ['confirmee', 'refusee'];
+    }
+
+    // Un transporteur assigné peut seulement marquer SA livraison comme faite
+    // (champ "deliveredAt" uniquement) — il ne peut rien voir/changer d'autre.
+    function isAssignedTransporterMarkingDelivered() {
+      return request.auth != null
+        && resource.data.deliveryTransporterUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deliveredAt']);
+    }
+
+    match /requests/{requestId} {
+      allow create: if canRequest() && request.resource.data.buyerUid == request.auth.uid;
+      allow read: if request.auth != null
+                  && (resource.data.buyerUid == request.auth.uid || isAdmin() || isFinancier()
+                      || resource.data.deliveryTransporterUid == request.auth.uid);
+      allow update: if isAdmin() || isBuyerConfirmingOwnQuote() || isAssignedTransporterMarkingDelivered();
+      allow delete: if false;
+    }
+
+    // Centre de connaissances (conseils, météo, vidéos de formation) :
+    // lecture publique (utile même sans compte), publication/suppression réservées à l'équipe AFA
+    match /articles/{articleId} {
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if false;
+    }
+  }
+}

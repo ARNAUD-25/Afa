@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Act for Agriculture (AFA)</title>
+
+<!-- PWA : permet d'ajouter l'app à l'écran d'accueil avec une icône -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#163527" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-180.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="AFA" />
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Karla:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" />
+
+<!-- React (pas de Node.js, pas de npm — tout vient d'un CDN) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+<!-- Firebase (SDK "compat", pensé pour être utilisé directement dans le navigateur sans bundler) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #EDEAD8; font-family: 'Karla', sans-serif; }
+  button, input, select, textarea { font-family: inherit; }
+  button { cursor: pointer; }
+  input:focus, textarea:focus, select:focus { outline: none; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #C8C4AD; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Config Firebase : script normal (pas de JSX dedans) -->
+<script src="firebaseConfig.js"></script>
+
+<!-- IA (diagnostic de plantes) : le SDK Firebase AI Logic n'existe qu'en version
+     "modulaire" moderne, pas en version "compat" comme le reste — d'où ce script
+     à part, de type "module". Il crée une DEUXIÈME instance de l'app Firebase
+     (même projet, juste un nom différent) car les styles "compat" et "modulaire"
+     ne peuvent pas partager directement la même instance. -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-app.js";
+  import { getAI, getGenerativeModel, GoogleAIBackend } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-ai.js";
+
+  try {
+    const aiApp = initializeApp(window.firebaseConfig, "aiApp");
+    const ai = getAI(aiApp, { backend: new GoogleAIBackend() });
+    const model = getGenerativeModel(ai, { model: "gemini-3.7-flash" });
+
+    window.diagnosePlant = async function (base64Image, mimeType) {
+      const prompt = "Tu es un agronome qui conseille des petits producteurs en République Démocratique du Congo. " +
+        "Regarde cette photo de plante et réponds en français, en 3 à 4 phrases courtes et simples : " +
+        "1) ce que tu observes sur la photo, 2) la maladie ou le problème le plus probable, " +
+        "3) un conseil pratique et réalisable localement. " +
+        "Si tu n'es pas sûr du diagnostic, dis-le clairement et recommande de consulter un agronome local ou l'équipe AFA.";
+      const imagePart = { inlineData: { data: base64Image, mimeType: mimeType || "image/jpeg" } };
+      const result = await model.generateContent([prompt, imagePart]);
+      return result.response.text();
+    };
+  } catch (err) {
+    console.warn("Diagnostic IA indisponible :", err.message);
+  }
+</script>
+
+<!-- L'application : contient du JSX, donc transformé par Babel directement dans le navigateur -->
+<script type="text/babel" data-presets="react" src="app.js"></script>
+
+<!-- Enregistre le service worker : nécessaire pour que le navigateur propose
+     "Ajouter à l'écran d'accueil" / "Installer l'application" -->
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("service-worker.js").catch((err) => {
+        console.warn("Service worker non enregistré :", err.message);
+      });
+    });
+  }
+</script>
+<!-- Dissuasion basique (clic-droit / raccourcis outils développeur) — NE BLOQUE PAS
+     un utilisateur qui sait ouvrir les DevTools autrement (menu navigateur, autre
+     raccourci selon l'OS). Ça décourage juste le clic accidentel/curieux occasionnel. -->
+<script>
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+  document.addEventListener("keydown", (e) => {
+    const key = e.key.toUpperCase();
+    if (key === "F12") e.preventDefault();
+    if (e.ctrlKey && e.shiftKey && (key === "I" || key === "J" || key === "C")) e.preventDefault();
+    if (e.ctrlKey && key === "U") e.preventDefault();
+  });
+</script>
+</body>
+</html>
